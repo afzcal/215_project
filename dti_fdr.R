@@ -1,7 +1,7 @@
 load('DTIdata.Rda')
 
 # Functions used to implement Storey procedure for finding FDR confidence interval
-#################################################################################################
+################################################################################################
 #given a rejection region
 WLambda <- function(lambda, p.values){
   sum(p.values > lambda)
