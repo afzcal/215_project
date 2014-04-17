@@ -1,3 +1,7 @@
+library(MASS)
+library(foreach)
+library(doParallel)
+
 RGamma <- function(gamma, test.stat){
   # function that returns the number of test statistics in a rejection region
   #args:
@@ -19,7 +23,7 @@ WGamma <- function(gamma, test.stat){
   return(length(test.stat) - r)
 }
 
-EstimateFDR <- function(gamma, gamma.prime, test.stat, n.iters=1000){
+EstimateFDR <- function(gamma, gamma.prime, test.stat, n.iters=50){
   #function that estimates pFDR for dependent data in a given rejection region
   #args:
   #<gamma> rejection region boundary under consideration
@@ -29,8 +33,10 @@ EstimateFDR <- function(gamma, gamma.prime, test.stat, n.iters=1000){
   #NOTE: this function is written such that the <test.stat> is assumed N(0, 1)
   
   n.test.stat <- length(test.stat)
-  test.stats.sim <- sapply(1:n.iters, function(iter) {
-    rnorm(n.test.stat)
+  test.stats.sim <- sapply(1:n.iters, function(i){
+     unif <- runif(n.test.stat)
+     test.stat <- qexp(unif, 1)
+     return(test.stat)
   })
   
   expected.r.null <- 1 / n.iters * sum(apply(test.stats.sim, 2, function(test.stat){
@@ -52,7 +58,7 @@ EstimateFDR <- function(gamma, gamma.prime, test.stat, n.iters=1000){
 }
 
 
-OptGamma <- function(gamma, lambda.sequence, test.stat, n.iters=1000){
+OptGamma <- function(gamma, lambda.sequence, test.stat, n.iters=50){
     # Implementation of Storey procedure for choosing Gamma* (optimal lambda) based on MSE when
     #observations are dependent
     #args:
@@ -63,11 +69,12 @@ OptGamma <- function(gamma, lambda.sequence, test.stat, n.iters=1000){
     #<n.iters> the number of times to simulate null data when calling EstimatepFDR
   
   #we are again assuming that our test statistics are N(0,1)
-  gamma.primes <- qnorm(lambda.sequence)
+  gamma.primes <- qexp(lambda.sequence, 1)
   pFDR.lambda <- sapply(gamma.primes, function(gam.prime){
-    estimate <- EstimateFDR(gamma, gam.prime, test.stat, n.iters)
+    estimate <- EstimateFDR(gamma, gam.prime, test.stat, n.iters=50)
     return(estimate$pFDR)
   })
+
 
   bias.lambdas.sq <- sapply(pFDR.lambda, function(pFDR){
     (pFDR - min(pFDR.lambda)) ^ 2
@@ -76,16 +83,17 @@ OptGamma <- function(gamma, lambda.sequence, test.stat, n.iters=1000){
   bias.lambdas.sq.adj <- bias.lambdas.sq / median(bias.lambdas.sq)
 
   # We are assuming our test statisitics come in matrix w/ independent cols
-  var.lambdas <- sapply(gamma.primes, function(gam.prime){
+  var.lambdas <- c()
+  for (gam.prime in gamma.primes) {
     n <- ncol(test.stat)
-    pFDR.heldout <- sapply(1:n, function(i){
-      pFDR.heldout <- EstimateFDR(gamma, gam.prime, test.stat[, -i], n.iters)
+    pFDR.heldout <- foreach (i = 1:n) %dopar% {
+      pFDR.heldout <- EstimateFDR(gamma, gam.prime, test.stat[, -i], n.iters=50)
       return(pFDR.heldout$pFDR)
-    })
-    pFDR.full <- EstimateFDR(gamma, gam.prime, test.stat)
-    var.lambda <- ((n - 1) / n) * sum( (pFDR.heldout - pFDR.full$pFDR) ^ 2)
-    return(var.lambda)
-  })
+    }
+    pFDR.heldout <- unlist(pFDR.heldout)
+    pFDR.full <- EstimateFDR(gamma, gam.prime, test.stat, n.iters=50)
+    var.lambdas <- c(var.lambdas, ((n - 1) / n) * sum( (pFDR.heldout - pFDR.full$pFDR) ^ 2))
+  }
 
   var.lambdas.adj <- var.lambdas / median(var.lambdas)
   MSE.lambdas <- bias.lambdas.sq.adj + var.lambdas.adj
@@ -94,6 +102,27 @@ OptGamma <- function(gamma, lambda.sequence, test.stat, n.iters=1000){
   
   return(opt.gamma)
 }
+
+ncores <- 12
+registerDoParallel(ncores)
+
+# A simulation using the prostate data
+load('prostatedata.Rda')
+test.statistics <- prostatedata
+test.statistics <- apply(test.statistics, 1, function(gene){
+  ((gene - mean(gene)) / sd(gene)) ^ 2
+})
+
+gamma <- 5
+lambda.seq <- seq(.1, .9, by=.1)
+
+opt.gamma <- OptGamma(gamma, lambda.seq, test.statistics)
+pFDR.est <- EstimateFDR(gamma, lambda.seq, test.statistics)
+
+filename = 'fdr.Rdata'
+save(opt.gamma, pFDR.est, file=filename)
+
+
 
 
 
